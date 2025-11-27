@@ -117,14 +117,23 @@ class MainWindow(QMainWindow):
         # Initialize database
         self.database = Database()
 
+        # Clear database on startup for fresh session
+        self._clear_session_data()
+
         # Worker reference
         self.current_worker = None
         self.current_video_id = None
 
+        # In-memory storage for current session
+        self.current_cluster_data = None
+        self.current_person_timestamps = {}  # person_id -> list of timestamps
+        self.current_person_names = {}  # person_id -> custom name
+
         self._setup_window()
         self._setup_ui()
         self._setup_menu()
-        self._load_existing_data()
+        # Don't load existing data - start fresh each time
+        # self._load_existing_data()
 
     def _setup_window(self):
         """Configure main window properties."""
@@ -259,6 +268,18 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
+        save_project_action = QAction("Save Project...", self)
+        save_project_action.setShortcut("Ctrl+S")
+        save_project_action.triggered.connect(self._save_project)
+        file_menu.addAction(save_project_action)
+
+        load_project_action = QAction("Load Project...", self)
+        load_project_action.setShortcut("Ctrl+L")
+        load_project_action.triggered.connect(self._load_project)
+        file_menu.addAction(load_project_action)
+
+        file_menu.addSeparator()
+
         exit_action = QAction("Exit", self)
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(self.close)
@@ -270,6 +291,27 @@ class MainWindow(QMainWindow):
         about_action = QAction("About", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
+
+    def _clear_session_data(self):
+        """Clear all session data for fresh start."""
+        # Clear all database tables
+        self.database.connection.execute("DELETE FROM face_instances")
+        self.database.connection.execute("DELETE FROM persons")
+        self.database.connection.execute("DELETE FROM videos")
+        self.database.connection.commit()
+
+        # Clear thumbnails directory
+        import shutil
+
+        thumbnails_dir = Path("thumbnails")
+        if thumbnails_dir.exists():
+            shutil.rmtree(thumbnails_dir)
+        thumbnails_dir.mkdir(exist_ok=True)
+
+        # Clear in-memory data
+        self.current_cluster_data = None
+        self.current_person_timestamps = {}
+        self.current_person_names = {}
 
     def _load_existing_data(self):
         """Load existing videos and persons from database."""
@@ -325,28 +367,31 @@ class MainWindow(QMainWindow):
 
         roi = roi_dialog.get_roi()
         video_info = roi_dialog.get_video_info()
+        frame_skip = roi_dialog.get_frame_skip()
+        time_range = roi_dialog.get_time_range()
 
         if not roi or not video_info:
             return
 
-        # Add video to database
-        file_name = Path(file_path).name
-        video_id = self.database.add_video(
-            file_path=file_path,
-            file_name=file_name,
-            duration=video_info["duration"],
-            fps=video_info["fps"],
-            width=video_info["width"],
-            height=video_info["height"],
-            roi=roi,
-        )
-
+        # Don't save to database - just process in memory
+        # Use a temporary video_id (0 means unsaved)
+        video_id = 0
         self.current_video_id = video_id
+        self.current_video_path = file_path
+        self.current_video_info = video_info
+        self.current_roi = roi
 
         # Start processing
-        self._start_processing(file_path, roi, video_id)
+        self._start_processing(file_path, roi, video_id, frame_skip, time_range)
 
-    def _start_processing(self, video_path: str, roi: tuple, video_id: int):
+    def _start_processing(
+        self,
+        video_path: str,
+        roi: tuple,
+        video_id: int,
+        frame_skip: int = 15,
+        time_range: tuple = (0, None),
+    ):
         """Start background processing of video."""
         # Show processing overlay
         self.processing_overlay.show()
@@ -357,9 +402,15 @@ class MainWindow(QMainWindow):
             video_path, roi, video_id, self.database
         )
 
+        # Set the frame skip value and time range
+        self.current_worker.frame_skip = frame_skip
+        self.current_worker.start_time = time_range[0]
+        self.current_worker.end_time = time_range[1]
+
         # Connect signals
         self.current_worker.progress_update.connect(self._on_progress_update)
         self.current_worker.processing_finished.connect(self._on_processing_finished)
+        self.current_worker.clusters_ready.connect(self._on_clusters_ready)
 
         # Start processing
         self.current_worker.start()
@@ -382,40 +433,101 @@ class MainWindow(QMainWindow):
         """Handle progress updates from worker."""
         self.processing_dialog.update_progress(percentage, status)
 
+    def _on_clusters_ready(self, cluster_data):
+        """Handle cluster data ready for display."""
+        # Store cluster data in memory
+        self.current_cluster_data = cluster_data
+
+        # Build person timestamps map
+        self.current_person_timestamps = {}
+        person_map = cluster_data["person_map"]
+        labels = cluster_data["labels"]
+        timestamps = cluster_data["face_timestamps"]
+
+        for cluster_id, person_id in person_map.items():
+            # Find all face instances for this person
+            cluster_indices = [
+                i for i, label in enumerate(labels) if label == cluster_id
+            ]
+            person_timestamps = [timestamps[i] for i in cluster_indices]
+            self.current_person_timestamps[person_id] = sorted(person_timestamps)
+
+        # Display persons in gallery
+        self._display_clusters_in_gallery(cluster_data)
+
     def _on_processing_finished(self, success: bool, message: str):
         """Handle processing completion."""
         self.processing_overlay.hide()
 
         if success:
             QMessageBox.information(self, "Success", message)
-            # Reload gallery
-            if self.current_video_id:
-                self._load_persons_for_video(self.current_video_id)
+            # Data is already displayed via _on_clusters_ready
         else:
             QMessageBox.critical(self, "Error", message)
 
         self.current_worker = None
 
+    def _display_clusters_in_gallery(self, cluster_data):
+        """Display detected persons in the gallery from memory."""
+        self.gallery.clear()
+
+        person_map = cluster_data["person_map"]
+        thumbnail_dir = cluster_data["thumbnail_dir"]
+        labels = cluster_data["labels"]
+
+        if not person_map:
+            self.stack.setCurrentIndex(0)  # Show empty state
+            return
+
+        # Add each person to gallery
+        for cluster_id, person_id in person_map.items():
+            thumbnail_path = thumbnail_dir / f"person_{cluster_id}.jpg"
+
+            # Count faces for this person
+            face_count = sum(1 for label in labels if label == cluster_id)
+
+            if thumbnail_path.exists():
+                self.gallery.add_person(
+                    person_id=person_id,
+                    name=f"Person {cluster_id + 1}",
+                    thumbnail_path=str(thumbnail_path),
+                    face_count=face_count,
+                )
+
+        # Switch to gallery view
+        self.stack.setCurrentIndex(1)
+
     def _on_person_selected(self, person_id: int):
         """Handle person selection from gallery."""
-        # Get person's face instances
-        instances = self.database.get_face_instances_by_person(person_id)
+        # Use in-memory data if available
+        if (
+            self.current_person_timestamps
+            and person_id in self.current_person_timestamps
+        ):
+            timestamps = self.current_person_timestamps[person_id]
 
-        if not instances:
-            return
+            if timestamps and self.current_video_path:
+                # Load video with timestamps
+                self.video_player.load_video(self.current_video_path, timestamps)
+        else:
+            # Fallback to database (for saved projects)
+            instances = self.database.get_face_instances_by_person(person_id)
 
-        # Get video path
-        video_id = instances[0]["video_id"]
-        video = self.database.get_video_by_id(video_id)
+            if not instances:
+                return
 
-        if not video:
-            return
+            # Get video path
+            video_id = instances[0]["video_id"]
+            video = self.database.get_video_by_id(video_id)
 
-        # Extract timestamps
-        timestamps = [inst["timestamp"] for inst in instances]
+            if not video:
+                return
 
-        # Load video with timestamps
-        self.video_player.load_video(video["file_path"], timestamps)
+            # Extract timestamps
+            timestamps = [inst["timestamp"] for inst in instances]
+
+            # Load video with timestamps
+            self.video_player.load_video(video["file_path"], timestamps)
 
         # Seek to first timestamp
         if timestamps:
@@ -423,7 +535,15 @@ class MainWindow(QMainWindow):
 
     def _on_person_renamed(self, person_id: int, new_name: str):
         """Handle person rename."""
-        self.database.update_person_name(person_id, new_name)
+        # Store in memory during session
+        self.current_person_names[person_id] = new_name
+
+        # Also update database if this is a loaded project
+        try:
+            self.database.update_person_name(person_id, new_name)
+        except:
+            # Person doesn't exist in database yet (unsaved session)
+            pass
 
     def _show_about(self):
         """Show about dialog."""
@@ -435,6 +555,290 @@ class MainWindow(QMainWindow):
             "<p><b>Version:</b> 1.0.0</p>"
             "<p><b>Technology:</b> PyQt6, OpenCV, face_recognition</p>",
         )
+
+    def _save_project(self):
+        """Save current project to an external database file."""
+        if not self.current_cluster_data:
+            QMessageBox.warning(
+                self,
+                "No Data to Save",
+                "Please process a video first before saving.",
+            )
+            return
+
+        # Ask user where to save the project
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Project",
+            "",
+            "FaceIndex Project (*.fip);;All Files (*)",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            import shutil
+            import sqlite3
+
+            # Create a new database for this project
+            project_db = sqlite3.connect(file_path)
+            project_db.row_factory = sqlite3.Row
+
+            # Copy schema from current database
+            for line in self.database.connection.iterdump():
+                if line not in ("BEGIN;", "COMMIT;"):
+                    project_db.execute(line)
+
+            # Store video metadata including path
+            cursor = project_db.cursor()
+            cursor.execute(
+                """
+                INSERT INTO videos (file_path, file_name, duration, fps, width, height,
+                                   roi_x, roi_y, roi_w, roi_h, processing_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')
+            """,
+                (
+                    self.current_video_path,
+                    Path(self.current_video_path).name,
+                    self.current_video_info["duration"],
+                    self.current_video_info["fps"],
+                    self.current_video_info["width"],
+                    self.current_video_info["height"],
+                    self.current_roi[0],
+                    self.current_roi[1],
+                    self.current_roi[2],
+                    self.current_roi[3],
+                ),
+            )
+            video_id = cursor.lastrowid
+
+            # Save persons and faces
+            cluster_data = self.current_cluster_data
+            person_map = cluster_data["person_map"]
+            labels = cluster_data["labels"]
+            face_images = cluster_data["face_images"]
+            face_timestamps = cluster_data["face_timestamps"]
+            face_locations = cluster_data["face_locations"]
+            face_encodings = cluster_data["face_encodings"]
+            thumbnail_dir = cluster_data["thumbnail_dir"]
+
+            # Create thumbnails directory in project file location
+            project_thumbnails = (
+                Path(file_path).parent / f"{Path(file_path).stem}_thumbnails"
+            )
+            project_thumbnails.mkdir(exist_ok=True)
+
+            for cluster_id, person_id in person_map.items():
+                # Copy person thumbnail
+                src_thumb = thumbnail_dir / f"person_{cluster_id}.jpg"
+                dest_thumb = project_thumbnails / f"person_{cluster_id}.jpg"
+                if src_thumb.exists():
+                    shutil.copy(src_thumb, dest_thumb)
+
+                # Get custom name if user renamed this person
+                person_name = self.current_person_names.get(
+                    person_id, f"Person {cluster_id + 1}"
+                )
+
+                # Add person to database
+                cursor.execute(
+                    """
+                    INSERT INTO persons (video_id, cluster_id, name, thumbnail_path)
+                    VALUES (?, ?, ?, ?)
+                """,
+                    (
+                        video_id,
+                        int(cluster_id),
+                        person_name,
+                        str(dest_thumb),
+                    ),
+                )
+                db_person_id = cursor.lastrowid
+
+                # Add face instances
+                cluster_indices = [
+                    i for i, label in enumerate(labels) if label == cluster_id
+                ]
+                for idx in cluster_indices:
+                    # Copy face thumbnail
+                    src_face = thumbnail_dir / f"face_{idx}.jpg"
+                    dest_face = project_thumbnails / f"face_{idx}.jpg"
+                    if src_face.exists():
+                        shutil.copy(src_face, dest_face)
+
+                    # Get bbox
+                    top, right, bottom, left = face_locations[idx]
+                    bbox = (left, top, right - left, bottom - top)
+
+                    # Get encoding
+                    encoding = face_encodings[idx]
+                    encoding_bytes = encoding.tobytes()
+
+                    cursor.execute(
+                        """
+                        INSERT INTO face_instances (person_id, video_id, timestamp, frame_number,
+                                                   bbox_x, bbox_y, bbox_w, bbox_h, encoding, confidence, thumbnail_path)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                        (
+                            db_person_id,
+                            video_id,
+                            face_timestamps[idx],
+                            0,
+                            bbox[0],
+                            bbox[1],
+                            bbox[2],
+                            bbox[3],
+                            encoding_bytes,
+                            1.0,
+                            str(dest_face),
+                        ),
+                    )
+
+            project_db.commit()
+            project_db.close()
+
+            QMessageBox.information(
+                self,
+                "Project Saved",
+                f"Project saved successfully to:\n{file_path}",
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Save Failed",
+                f"Failed to save project:\n{str(e)}",
+            )
+
+    def _load_project(self):
+        """Load a project from an external database file."""
+        # Ask user to select project file
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Project",
+            "",
+            "FaceIndex Project (*.fip);;All Files (*)",
+        )
+
+        if not file_path:
+            return
+
+        try:
+            import sqlite3
+
+            # Open project database
+            project_db = sqlite3.connect(file_path)
+            project_db.row_factory = sqlite3.Row
+            cursor = project_db.cursor()
+
+            # Get video info
+            cursor.execute("SELECT * FROM videos LIMIT 1")
+            video_row = cursor.fetchone()
+
+            if not video_row:
+                QMessageBox.warning(
+                    self, "Invalid Project", "No video data found in project file."
+                )
+                project_db.close()
+                return
+
+            stored_video_path = video_row["file_path"]
+
+            # Check if video file exists at original location
+            if not Path(stored_video_path).exists():
+                # Ask user to locate the video file
+                QMessageBox.information(
+                    self,
+                    "Locate Video File",
+                    f"The original video file was not found at:\n{stored_video_path}\n\n"
+                    "Please locate the video file.",
+                )
+
+                video_path, _ = QFileDialog.getOpenFileName(
+                    self,
+                    "Select Video File",
+                    "",
+                    "Video Files (*.mp4 *.avi *.mov *.mkv *.wmv);;All Files (*)",
+                )
+
+                if not video_path:
+                    project_db.close()
+                    return
+            else:
+                video_path = stored_video_path
+
+            # Load persons
+            cursor.execute(
+                "SELECT * FROM persons WHERE video_id = ?", (video_row["id"],)
+            )
+            persons = cursor.fetchall()
+
+            # Clear current gallery
+            self.gallery.clear()
+
+            # Store video info
+            self.current_video_path = video_path
+            self.current_video_info = {
+                "duration": video_row["duration"],
+                "fps": video_row["fps"],
+                "width": video_row["width"],
+                "height": video_row["height"],
+            }
+            self.current_roi = (
+                video_row["roi_x"],
+                video_row["roi_y"],
+                video_row["roi_w"],
+                video_row["roi_h"],
+            )
+
+            # Build person timestamps from face instances
+            self.current_person_timestamps = {}
+            self.current_person_names = {}
+
+            for person in persons:
+                person_id = person["id"]
+
+                # Get face instances for this person
+                cursor.execute(
+                    "SELECT timestamp FROM face_instances WHERE person_id = ? ORDER BY timestamp",
+                    (person_id,),
+                )
+                timestamps = [row["timestamp"] for row in cursor.fetchall()]
+                self.current_person_timestamps[person_id] = timestamps
+
+                # Store custom name in memory
+                self.current_person_names[person_id] = person["name"]
+
+                # Add to gallery
+                thumbnail_path = person["thumbnail_path"]
+                if Path(thumbnail_path).exists():
+                    self.gallery.add_person(
+                        person_id=person_id,
+                        name=person["name"],
+                        thumbnail_path=thumbnail_path,
+                        face_count=len(timestamps),
+                    )
+
+            project_db.close()
+
+            # Switch to gallery view
+            self.stack.setCurrentIndex(1)
+
+            QMessageBox.information(
+                self,
+                "Project Loaded",
+                f"Project loaded successfully!\n\n"
+                f"Found {len(persons)} person(s) in the video.",
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Load Failed",
+                f"Failed to load project:\n{str(e)}",
+            )
 
     def resizeEvent(self, event):
         """Handle window resize to update overlay position."""

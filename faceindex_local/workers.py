@@ -28,6 +28,7 @@ class FaceProcessingWorker(QThread):
         object, float, int, tuple
     )  # (image, timestamp, frame_num, bbox)
     faces_clustered = pyqtSignal(int, list)  # (cluster_count, cluster_info)
+    clusters_ready = pyqtSignal(object)  # Complete cluster data for display
 
     def __init__(
         self,
@@ -48,6 +49,8 @@ class FaceProcessingWorker(QThread):
         self.min_face_size = 40  # Minimum face size in pixels
         self.clustering_eps = 0.5  # DBSCAN epsilon (lower = stricter)
         self.min_samples = 2  # Minimum faces to form a cluster
+        self.start_time = 0.0  # Start time in seconds
+        self.end_time = None  # End time in seconds (None = end of video)
 
         # Data storage
         self.face_encodings = []
@@ -99,17 +102,27 @@ class FaceProcessingWorker(QThread):
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         fps = cap.get(cv2.CAP_PROP_FPS)
 
-        frame_num = 0
+        # Calculate frame range based on time range
+        start_frame = int(self.start_time * fps) if fps > 0 else 0
+        if self.end_time is not None:
+            end_frame = int(self.end_time * fps)
+        else:
+            end_frame = total_frames
+
+        # Seek to start frame
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        frame_num = start_frame
         processed_frames = 0
         faces_found = 0
 
-        while self._is_running and cap.isOpened():
+        while self._is_running and cap.isOpened() and frame_num < end_frame:
             ret, frame = cap.read()
             if not ret:
                 break
 
             # Only process every Nth frame
-            if frame_num % self.frame_skip == 0:
+            if (frame_num - start_frame) % self.frame_skip == 0:
                 timestamp = frame_num / fps if fps > 0 else 0
 
                 # Crop to ROI
@@ -123,8 +136,13 @@ class FaceProcessingWorker(QThread):
                 processed_frames += 1
 
                 # Update progress (0-80% for detection)
-                progress = int((frame_num / total_frames) * 80)
-                status = f"Detecting faces... Frame {frame_num}/{total_frames} ({faces_found} faces found)"
+                frames_in_range = end_frame - start_frame
+                progress = (
+                    int(((frame_num - start_frame) / frames_in_range) * 80)
+                    if frames_in_range > 0
+                    else 0
+                )
+                status = f"Detecting faces... Frame {frame_num}/{end_frame} ({faces_found} faces found)"
                 self.progress_update.emit(progress, status)
 
             frame_num += 1
@@ -241,15 +259,18 @@ class FaceProcessingWorker(QThread):
             thumbnail_path = self.thumbnail_dir / f"person_{cluster_id}.jpg"
             cv2.imwrite(str(thumbnail_path), self.face_images[first_idx])
 
-            # Add person to database
-            person_id = self.database.add_person(
-                video_id=self.video_id,
-                cluster_id=int(cluster_id),
-                name=f"Person {cluster_id + 1}",
-                thumbnail_path=str(thumbnail_path),
-            )
-
-            person_map[cluster_id] = person_id
+            # Add person to database (only if video is saved)
+            if self.video_id != 0 and self.database:
+                person_id = self.database.add_person(
+                    video_id=self.video_id,
+                    cluster_id=int(cluster_id),
+                    name=f"Person {cluster_id + 1}",
+                    thumbnail_path=str(thumbnail_path),
+                )
+                person_map[cluster_id] = person_id
+            else:
+                # Use cluster_id as temporary person_id for unsaved videos
+                person_map[cluster_id] = cluster_id
 
         # Add all face instances
         for idx, cluster_id in enumerate(self.labels):
@@ -266,20 +287,34 @@ class FaceProcessingWorker(QThread):
             top, right, bottom, left = self.face_locations[idx]
             bbox = (left, top, right - left, bottom - top)
 
-            # Add to database
-            self.database.add_face_instance(
-                person_id=person_id,
-                video_id=self.video_id,
-                timestamp=self.face_timestamps[idx],
-                frame_number=self.face_frame_numbers[idx],
-                bbox=bbox,
-                encoding=self.face_encodings[idx],
-                confidence=1.0,
-                thumbnail_path=str(face_thumbnail_path),
-            )
+            # Add to database (only if video is saved)
+            if self.video_id != 0 and self.database:
+                self.database.add_face_instance(
+                    person_id=person_id,
+                    video_id=self.video_id,
+                    timestamp=self.face_timestamps[idx],
+                    frame_number=self.face_frame_numbers[idx],
+                    bbox=bbox,
+                    encoding=self.face_encodings[idx],
+                    confidence=1.0,
+                    thumbnail_path=str(face_thumbnail_path),
+                )
 
-        # Update video status
-        self.database.update_video_status(self.video_id, "completed")
+        # Update video status (only if video is saved)
+        if self.video_id != 0 and self.database:
+            self.database.update_video_status(self.video_id, "completed")
+
+        # Emit complete cluster data for display (even if not saved to database)
+        cluster_data = {
+            "person_map": person_map,
+            "labels": self.labels,
+            "face_images": self.face_images,
+            "face_timestamps": self.face_timestamps,
+            "face_locations": self.face_locations,
+            "face_encodings": self.face_encodings,
+            "thumbnail_dir": self.thumbnail_dir,
+        }
+        self.clusters_ready.emit(cluster_data)
 
     def stop(self):
         """Stop the worker gracefully."""
