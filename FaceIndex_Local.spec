@@ -4,11 +4,11 @@
 block_cipher = None
 
 a = Analysis(
-    ['main.py'],
-    pathex=[],
+    ['main.py', 'database.py', 'workers.py', 'widgets/__init__.py', 'widgets/roi_selector.py', 'widgets/gallery.py', 'widgets/video_player.py'],
+    pathex=['.'],
     binaries=[],
     datas=[
-        # Add any resource files here if needed
+        ('venv/lib/python3.14/site-packages/face_recognition_models/models', 'face_recognition_models/models'),
     ],
     hiddenimports=[
         'PyQt6.QtCore',
@@ -24,6 +24,7 @@ a = Analysis(
         'qdarktheme',
         'database',
         'workers',
+        'widgets',
         'widgets.roi_selector',
         'widgets.gallery',
         'widgets.video_player',
@@ -49,27 +50,34 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='FaceIndex Local',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=False,  # Set to True for debugging
+    console=False,
     disable_windowed_traceback=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
 )
 
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='FaceIndex Local',
+)
+
 # macOS App Bundle
 app = BUNDLE(
-    exe,
+    coll,
     name='FaceIndex Local.app',
     icon=None,  # Add 'app_icon.icns' if you create one
     bundle_identifier='com.faceindex.local',
