@@ -3,15 +3,16 @@ Background workers for heavy processing tasks.
 Keeps the UI responsive during video processing.
 """
 
-from PyQt6.QtCore import QThread, pyqtSignal
-import cv2
-import numpy as np
-import face_recognition
-from sklearn.cluster import DBSCAN
-from pathlib import Path
 import os
-from typing import List, Tuple, Optional
 import time
+from pathlib import Path
+from typing import List, Optional, Tuple
+
+import cv2
+import face_recognition
+import numpy as np
+from PyQt6.QtCore import QThread, pyqtSignal
+from sklearn.cluster import DBSCAN
 
 
 class FaceProcessingWorker(QThread):
@@ -295,7 +296,6 @@ class VideoExportWorker(QThread):
     def __init__(
         self, video_path: str, timestamps: List[float], output_path: str, parent=None
     ):
-                 output_path: str, parent=None):
         super().__init__(parent)
         self.video_path = video_path
         self.timestamps = timestamps

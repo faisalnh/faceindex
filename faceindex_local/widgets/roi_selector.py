@@ -64,17 +64,31 @@ class ROISelectorLabel(QLabel):
         if self.original_pixmap is None:
             return
 
-        # Create a copy to draw on
-        pixmap = self.original_pixmap.copy()
+        # Scale to fit widget first
+        scaled_pixmap = self.original_pixmap.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
 
         # Draw the rectangle if it exists
         if not self.current_rect.isNull():
-            painter = QPainter(pixmap)
+            # Create a transparent overlay pixmap
+            overlay = QPixmap(scaled_pixmap.size())
+            overlay.fill(Qt.GlobalColor.transparent)
 
-            # Semi-transparent overlay outside ROI
-            painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 120))
-            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-            painter.fillRect(self.current_rect, Qt.GlobalColor.transparent)
+            painter = QPainter(overlay)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+            # Draw semi-transparent overlay outside ROI
+            painter.fillRect(overlay.rect(), QColor(0, 0, 0, 120))
+
+            # Clear the ROI area to make it transparent
+            painter.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_SourceOut
+            )
+            painter.fillRect(self.current_rect, QColor(0, 0, 0, 255))
+
             painter.setCompositionMode(
                 QPainter.CompositionMode.CompositionMode_SourceOver
             )
@@ -82,6 +96,7 @@ class ROISelectorLabel(QLabel):
             # Green border for ROI
             pen = QPen(QColor(0, 255, 0), 3, Qt.PenStyle.SolidLine)
             painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(self.current_rect)
 
             # Draw corner handles
@@ -98,26 +113,52 @@ class ROISelectorLabel(QLabel):
 
             painter.end()
 
-        # Scale to fit widget
-        scaled_pixmap = pixmap.scaled(
-            self.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
+            # Composite the overlay onto the scaled image
+            final_painter = QPainter(scaled_pixmap)
+            final_painter.drawPixmap(0, 0, overlay)
+            final_painter.end()
+
         self.setPixmap(scaled_pixmap)
+
+    def _get_image_offset(self):
+        """Get the offset of the scaled image within the widget."""
+        if not self.pixmap():
+            return (0, 0)
+
+        pixmap_width = self.pixmap().width()
+        pixmap_height = self.pixmap().height()
+
+        offset_x = (self.width() - pixmap_width) // 2
+        offset_y = (self.height() - pixmap_height) // 2
+
+        return (offset_x, offset_y)
+
+    def _map_to_pixmap_coords(self, widget_pos):
+        """Map widget coordinates to pixmap coordinates."""
+        offset_x, offset_y = self._get_image_offset()
+
+        pixmap_x = widget_pos.x() - offset_x
+        pixmap_y = widget_pos.y() - offset_y
+
+        # Clamp to pixmap bounds
+        if self.pixmap():
+            pixmap_x = max(0, min(pixmap_x, self.pixmap().width()))
+            pixmap_y = max(0, min(pixmap_y, self.pixmap().height()))
+
+        return QPoint(pixmap_x, pixmap_y)
 
     def mousePressEvent(self, event):
         """Handle mouse press to start drawing."""
         if event.button() == Qt.MouseButton.LeftButton and self.original_pixmap:
             self.drawing = True
-            self.start_point = event.pos()
+            self.start_point = self._map_to_pixmap_coords(event.pos())
             self.current_rect = QRect(self.start_point, self.start_point)
             self._update_display()
 
     def mouseMoveEvent(self, event):
         """Handle mouse move to update rectangle."""
         if self.drawing and self.original_pixmap:
-            self.end_point = event.pos()
+            self.end_point = self._map_to_pixmap_coords(event.pos())
             self.current_rect = QRect(self.start_point, self.end_point).normalized()
             self._update_display()
 
@@ -125,7 +166,7 @@ class ROISelectorLabel(QLabel):
         """Handle mouse release to finish drawing."""
         if event.button() == Qt.MouseButton.LeftButton and self.drawing:
             self.drawing = False
-            self.end_point = event.pos()
+            self.end_point = self._map_to_pixmap_coords(event.pos())
             self.current_rect = QRect(self.start_point, self.end_point).normalized()
             self._update_display()
 
@@ -147,13 +188,9 @@ class ROISelectorLabel(QLabel):
         scale_x = self.image_size[0] / display_pixmap.width()
         scale_y = self.image_size[1] / display_pixmap.height()
 
-        # Calculate offset (centered image)
-        offset_x = (self.width() - display_pixmap.width()) // 2
-        offset_y = (self.height() - display_pixmap.height()) // 2
-
-        # Convert to image coordinates
-        x = int((self.current_rect.x() - offset_x) * scale_x)
-        y = int((self.current_rect.y() - offset_y) * scale_y)
+        # Convert to image coordinates (no offset needed as we're already in pixmap coords)
+        x = int(self.current_rect.x() * scale_x)
+        y = int(self.current_rect.y() * scale_y)
         w = int(self.current_rect.width() * scale_x)
         h = int(self.current_rect.height() * scale_y)
 

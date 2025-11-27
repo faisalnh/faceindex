@@ -132,7 +132,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1200, 800)
 
         # Apply dark theme
-        qdarktheme.setup_theme("dark")
+        self.setStyleSheet(qdarktheme.load_stylesheet("dark"))
 
     def _setup_ui(self):
         """Set up the main UI layout."""

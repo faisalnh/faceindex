@@ -1,21 +1,19 @@
 """
-Video Player Widget - Custom video player with timeline visualization.
+Video Player Widget - Custom video player with timeline visualization using OpenCV.
 """
 
-import os
-from typing import List, Tuple
+from typing import List
 
-from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
-from PyQt6.QtMultimediaWidgets import QVideoWidget
+import cv2
+import numpy as np
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QSlider,
-    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -90,16 +88,20 @@ class TimelineWidget(QWidget):
 
 
 class VideoPlayerWidget(QWidget):
-    """Complete video player with controls and timeline."""
+    """Complete video player with controls and timeline using OpenCV."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_video_path = None
         self.person_timestamps = []
+        self.cap = None
+        self.is_playing = False
+        self.current_frame_number = 0
+        self.total_frames = 0
+        self.fps = 30
 
         self._setup_ui()
-        self._setup_player()
-        self._setup_connections()
+        self._setup_timer()
 
     def _setup_ui(self):
         """Set up the player UI."""
@@ -107,14 +109,20 @@ class VideoPlayerWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        # Video widget
-        self.video_widget = QVideoWidget()
-        self.video_widget.setMinimumHeight(400)
-        self.video_widget.setStyleSheet("background-color: #000000;")
-        layout.addWidget(self.video_widget)
+        # Video display area
+        self.video_label = QLabel()
+        self.video_label.setMinimumHeight(400)
+        self.video_label.setStyleSheet(
+            "background-color: #000000; border: 1px solid #3d3d3d;"
+        )
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_label.setText("No video loaded")
+        self.video_label.setScaledContents(False)
+        layout.addWidget(self.video_label)
 
         # Timeline visualization
         self.timeline = TimelineWidget()
+        self.timeline.position_clicked.connect(self._seek_to_timestamp)
         layout.addWidget(self.timeline)
 
         # Progress slider
@@ -146,6 +154,9 @@ class VideoPlayerWidget(QWidget):
                 border-radius: 3px;
             }
         """)
+        self.position_slider.sliderPressed.connect(self._on_slider_pressed)
+        self.position_slider.sliderReleased.connect(self._on_slider_released)
+        self.position_slider.valueChanged.connect(self._on_slider_moved)
         slider_layout.addWidget(self.position_slider)
 
         self.duration_label = QLabel("00:00")
@@ -173,138 +184,182 @@ class VideoPlayerWidget(QWidget):
             QPushButton:pressed {
                 background-color: #2d2d2d;
             }
+            QPushButton:disabled {
+                background-color: #2d2d2d;
+                color: #666;
+            }
         """
 
         self.play_button = QPushButton("Play")
         self.play_button.setStyleSheet(button_style)
+        self.play_button.clicked.connect(self._toggle_playback)
+        self.play_button.setEnabled(False)
         controls_layout.addWidget(self.play_button)
 
         self.prev_button = QPushButton("← Previous")
         self.prev_button.setStyleSheet(button_style)
         self.prev_button.setEnabled(False)
+        self.prev_button.clicked.connect(self._go_to_previous)
         controls_layout.addWidget(self.prev_button)
 
         self.next_button = QPushButton("Next →")
         self.next_button.setStyleSheet(button_style)
         self.next_button.setEnabled(False)
+        self.next_button.clicked.connect(self._go_to_next)
         controls_layout.addWidget(self.next_button)
 
         controls_layout.addStretch()
 
-        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
-        self.volume_slider.setRange(0, 100)
-        self.volume_slider.setValue(70)
-        self.volume_slider.setMaximumWidth(100)
-        self.volume_slider.setStyleSheet(self.position_slider.styleSheet())
-        controls_layout.addWidget(QLabel("🔊"))
-        controls_layout.addWidget(self.volume_slider)
-
         layout.addLayout(controls_layout)
 
-    def _setup_player(self):
-        """Set up the media player."""
-        self.player = QMediaPlayer()
-        self.audio_output = QAudioOutput()
-        self.player.setAudioOutput(self.audio_output)
-        self.player.setVideoOutput(self.video_widget)
-
-        # Set initial volume
-        self.audio_output.setVolume(0.7)
-
-    def _setup_connections(self):
-        """Connect signals and slots."""
-        # Player signals
-        self.player.positionChanged.connect(self._on_position_changed)
-        self.player.durationChanged.connect(self._on_duration_changed)
-        self.player.playbackStateChanged.connect(self._on_state_changed)
-
-        # Control signals
-        self.play_button.clicked.connect(self._toggle_playback)
-        self.position_slider.sliderMoved.connect(self._seek_position)
-        self.volume_slider.valueChanged.connect(self._change_volume)
-
-        # Timeline signals
-        self.timeline.position_clicked.connect(self._seek_to_timestamp)
-
-        # Navigation signals
-        self.prev_button.clicked.connect(self._go_to_previous)
-        self.next_button.clicked.connect(self._go_to_next)
+    def _setup_timer(self):
+        """Set up playback timer."""
+        self.timer = QTimer()
+        self.timer.timeout.connect(self._update_frame)
+        self.slider_dragging = False
 
     def load_video(self, video_path: str, timestamps: List[float] = None):
         """Load a video file and optionally set person timestamps."""
-        if not os.path.exists(video_path):
-            print(f"Video file not found: {video_path}")
-            return
+        if self.cap:
+            self.cap.release()
 
         self.current_video_path = video_path
         self.person_timestamps = sorted(timestamps) if timestamps else []
 
-        # Load video
-        self.player.setSource(QUrl.fromLocalFile(video_path))
+        # Open video with OpenCV
+        self.cap = cv2.VideoCapture(video_path)
 
-        # Update timeline
+        if not self.cap.isOpened():
+            self.video_label.setText("Error loading video")
+            return
+
+        # Get video properties
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
+        self.duration = self.total_frames / self.fps
+
+        # Update UI
+        self.position_slider.setRange(0, self.total_frames - 1)
+        self.duration_label.setText(self._format_time(int(self.duration)))
+        self.timeline.set_duration(self.duration)
+
         if timestamps:
             self.timeline.set_timestamps(timestamps)
             self.prev_button.setEnabled(True)
             self.next_button.setEnabled(True)
 
+        self.play_button.setEnabled(True)
+
+        # Show first frame
+        self.current_frame_number = 0
+        self._show_frame(0)
+
+    def _show_frame(self, frame_number: int):
+        """Display a specific frame."""
+        if not self.cap:
+            return
+
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+        ret, frame = self.cap.read()
+
+        if ret:
+            # Convert BGR to RGB
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            h, w, ch = rgb_frame.shape
+            bytes_per_line = ch * w
+
+            # Create QImage and QPixmap
+            q_image = QImage(
+                rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888
+            )
+            pixmap = QPixmap.fromImage(q_image)
+
+            # Scale to fit label while maintaining aspect ratio
+            scaled_pixmap = pixmap.scaled(
+                self.video_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+
+            self.video_label.setPixmap(scaled_pixmap)
+
+            # Update position
+            self.current_frame_number = frame_number
+            timestamp = frame_number / self.fps
+
+            if not self.slider_dragging:
+                self.position_slider.setValue(frame_number)
+
+            self.position_label.setText(self._format_time(int(timestamp)))
+            self.timeline.set_current_position(timestamp)
+
+    def _update_frame(self):
+        """Update frame during playback."""
+        if not self.cap or not self.is_playing:
+            return
+
+        next_frame = self.current_frame_number + 1
+
+        if next_frame >= self.total_frames:
+            # End of video
+            self._toggle_playback()
+            return
+
+        self._show_frame(next_frame)
+
     def _toggle_playback(self):
         """Toggle between play and pause."""
-        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
-            self.player.pause()
-        else:
-            self.player.play()
+        if not self.cap:
+            return
 
-    def _on_state_changed(self, state):
-        """Handle playback state changes."""
-        if state == QMediaPlayer.PlaybackState.PlayingState:
+        self.is_playing = not self.is_playing
+
+        if self.is_playing:
             self.play_button.setText("Pause")
+            interval = int(1000 / self.fps)  # milliseconds
+            self.timer.start(interval)
         else:
             self.play_button.setText("Play")
+            self.timer.stop()
 
-    def _on_position_changed(self, position):
-        """Handle position changes (in milliseconds)."""
-        # Update slider
-        self.position_slider.setValue(position)
-
-        # Update label
-        seconds = position // 1000
-        self.position_label.setText(self._format_time(seconds))
-
-        # Update timeline
-        self.timeline.set_current_position(seconds)
-
-    def _on_duration_changed(self, duration):
-        """Handle duration changes (in milliseconds)."""
-        self.position_slider.setRange(0, duration)
-
-        seconds = duration // 1000
-        self.duration_label.setText(self._format_time(seconds))
-        self.timeline.set_duration(seconds)
-
-    def _seek_position(self, position):
-        """Seek to a specific position."""
-        self.player.setPosition(position)
-
-    def _seek_to_timestamp(self, timestamp):
+    def _seek_to_timestamp(self, timestamp: float):
         """Seek to a specific timestamp in seconds."""
-        self.player.setPosition(int(timestamp * 1000))
+        if not self.cap:
+            return
 
-    def _change_volume(self, value):
-        """Change the volume."""
-        self.audio_output.setVolume(value / 100)
+        frame_number = int(timestamp * self.fps)
+        frame_number = max(0, min(frame_number, self.total_frames - 1))
+        self._show_frame(frame_number)
+
+    def _on_slider_pressed(self):
+        """Handle slider press."""
+        self.slider_dragging = True
+        if self.is_playing:
+            self._toggle_playback()
+
+    def _on_slider_released(self):
+        """Handle slider release."""
+        self.slider_dragging = False
+        if self.cap:
+            self._show_frame(self.position_slider.value())
+
+    def _on_slider_moved(self, value):
+        """Handle slider movement."""
+        if self.slider_dragging and self.cap:
+            timestamp = value / self.fps
+            self.position_label.setText(self._format_time(int(timestamp)))
 
     def _go_to_previous(self):
         """Jump to previous timestamp."""
         if not self.person_timestamps:
             return
 
-        current_pos = self.player.position() / 1000  # Convert to seconds
+        current_time = self.current_frame_number / self.fps
 
         # Find previous timestamp
         prev_timestamp = None
         for ts in reversed(self.person_timestamps):
-            if ts < current_pos - 1:  # 1 second threshold
+            if ts < current_time - 1:  # 1 second threshold
                 prev_timestamp = ts
                 break
 
@@ -320,12 +375,12 @@ class VideoPlayerWidget(QWidget):
         if not self.person_timestamps:
             return
 
-        current_pos = self.player.position() / 1000  # Convert to seconds
+        current_time = self.current_frame_number / self.fps
 
         # Find next timestamp
         next_timestamp = None
         for ts in self.person_timestamps:
-            if ts > current_pos + 1:  # 1 second threshold
+            if ts > current_time + 1:  # 1 second threshold
                 next_timestamp = ts
                 break
 
@@ -344,9 +399,15 @@ class VideoPlayerWidget(QWidget):
 
     def stop(self):
         """Stop playback and release resources."""
-        self.player.stop()
+        if self.is_playing:
+            self._toggle_playback()
+
+        if self.cap:
+            self.cap.release()
+            self.cap = None
 
     def cleanup(self):
         """Clean up resources."""
-        self.player.stop()
-        self.player.setSource(QUrl())
+        self.stop()
+        self.video_label.clear()
+        self.video_label.setText("No video loaded")
