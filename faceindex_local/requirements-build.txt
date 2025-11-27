@@ -1,0 +1,14 @@
+# Build dependencies for creating standalone applications
+
+# Base requirements
+-r requirements.txt
+
+# Packaging tools
+pyinstaller==6.3.0
+
+# macOS app bundler (macOS only)
+py2app==0.28.6; sys_platform == 'darwin'
+
+# Optional: UPX for compression (install separately via system package manager)
+# macOS: brew install upx
+# Linux: sudo apt-get install upx-ucl
