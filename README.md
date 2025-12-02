@@ -56,6 +56,38 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### Windows
+
+**Prerequisites:**
+- Python 3.8 or higher
+- Git (optional, for cloning)
+
+**Setup and Run:**
+
+1. Clone or download this repository
+
+2. Open PowerShell in the project directory
+
+3. If this is your first time running PowerShell scripts, you may need to allow script execution:
+   ```powershell
+   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+   ```
+
+4. Run the application:
+   ```powershell
+   .\run.ps1
+   ```
+
+The script will automatically:
+- Create a virtual environment (if needed)
+- Install dependencies
+- Launch the application
+
+**Troubleshooting:**
+- If you get "Python not found", ensure Python is installed and added to PATH
+- If you get execution policy errors, run the Set-ExecutionPolicy command above
+- Antivirus may briefly scan the application on first run - this is normal
+
 ## Usage
 
 ### Running the Application

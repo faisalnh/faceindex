@@ -2,7 +2,9 @@
 
 ## Installation (5 minutes)
 
-### Step 1: Install System Dependencies
+### macOS/Linux
+
+**Step 1: Install System Dependencies**
 
 **macOS:**
 ```bash
@@ -15,7 +17,7 @@ sudo apt-get update
 sudo apt-get install cmake python3-dev python3-pip build-essential
 ```
 
-### Step 2: Set Up Python Environment
+**Step 2: Set Up Python Environment**
 
 ```bash
 cd faceindex_local
@@ -37,7 +39,7 @@ This will install:
 - scikit-learn (clustering)
 - qdarktheme (dark UI theme)
 
-### Step 3: Run the Application
+**Step 3: Run the Application**
 
 ```bash
 python main.py
@@ -47,6 +49,21 @@ Or use the run script:
 ```bash
 ./run.sh
 ```
+
+### Windows Quick Start
+
+1. **Download/Clone** the repository
+2. **Open PowerShell** in the project folder
+3. **Run**: `.\run.ps1`
+4. **Wait** for dependencies to install (first run only)
+5. **Use** the application!
+
+**First time?** You may need to allow PowerShell scripts:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+**Note:** The PowerShell script automatically handles virtual environment creation, dependency installation, and launching the application.
 
 ## First Use (2 minutes)
 
