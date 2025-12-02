@@ -16,8 +16,13 @@ brew install cmake
 sudo apt-get install cmake python3-dev build-essential
 ```
 
+**Windows:**
+- Python 3.8+ (with pip)
+- Microsoft Visual C++ 14.0+ (for dlib compilation)
+
 ### Build Steps
 
+**macOS/Linux:**
 ```bash
 # 1. Set up environment
 python3 -m venv venv
@@ -31,11 +36,18 @@ pip install -r requirements-build.txt
 ./build.sh
 ```
 
+**Windows:**
+```powershell
+# 1. Run the build script
+.\build.ps1
+```
+
 **Output:**
 - **macOS:** `dist/FaceIndex Local.app`
 - **Linux:** `dist/FaceIndex-Local`
+- **Windows:** Development environment (source code execution)
 
-That's it! The standalone app is ready to distribute.
+That's it! The standalone app is ready to distribute (macOS/Linux) or use (Windows).
 
 ## Detailed Instructions
 
@@ -94,6 +106,43 @@ pyinstaller --onefile \
 
 # Output: dist/FaceIndex-Local
 ```
+
+### Windows - Development Build
+
+Currently, Windows builds are **development-only** (no standalone .exe yet).
+
+#### Using the build script
+
+1. Open PowerShell in project directory
+2. Run: `.\build.ps1`
+3. This will:
+   - Create virtual environment
+   - Install all dependencies
+   - Prepare development environment
+
+#### Running After Build
+
+```powershell
+.\run.ps1
+```
+
+#### Future: Standalone .exe
+
+Windows executable builds using PyInstaller are planned for future releases. For now, users need Python installed to run the application.
+
+**Manual PyInstaller build (experimental):**
+```powershell
+# Activate virtual environment
+.\venv\Scripts\Activate.ps1
+
+# Install PyInstaller
+pip install pyinstaller
+
+# Build (not fully tested on Windows)
+pyinstaller --onefile --windowed --name="FaceIndex-Local" main.py
+```
+
+**Note:** The PyInstaller build may require additional configuration for Windows-specific dependencies (dlib, face_recognition).
 
 ## Testing the Build
 

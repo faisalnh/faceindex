@@ -1,0 +1,38 @@
+# FaceIndex Local - Git Attributes Configuration
+# Ensures correct line endings across platforms
+
+# Default to LF for all text files
+* text=auto
+
+# Python files use LF
+*.py text eol=lf
+
+# Shell scripts use LF
+*.sh text eol=lf
+
+# PowerShell scripts use CRLF
+*.ps1 text eol=crlf
+
+# Batch files use CRLF (if added later)
+*.bat text eol=crlf
+
+# Documentation uses LF
+*.md text eol=lf
+
+# Configuration files use LF
+*.json text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Don't modify binary files
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.ico binary
+*.db binary
+*.sqlite binary
+*.pkl binary
+*.npy binary
+*.npz binary

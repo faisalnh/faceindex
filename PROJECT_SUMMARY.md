@@ -30,8 +30,11 @@ faceindex_local/
 ├── requirements-build.txt      # Build tool dependencies
 ├── FaceIndex_Local.spec        # PyInstaller configuration
 ├── setup.py                    # py2app configuration (macOS)
-├── build.sh                    # Automated build script
-├── run.sh                      # Development run script
+├── build.sh                    # Automated build script (macOS/Linux)
+├── build.ps1                   # Build script for Windows (PowerShell)
+├── run.sh                      # Development run script (macOS/Linux)
+├── run.ps1                     # Run script for Windows (PowerShell)
+├── .gitattributes              # Git line ending configuration
 ├── README.md                   # User documentation
 ├── QUICKSTART.md               # Quick start guide
 ├── BUILD.md                    # Build instructions
@@ -236,10 +239,16 @@ python main.py
 5. Provide installation instructions
 
 ### System Requirements
-- **OS**: macOS 10.14+ or Linux (Ubuntu 20.04+)
+- **OS**: macOS 10.14+, Linux (Ubuntu 20.04+), or Windows 10/11
 - **RAM**: 4GB minimum, 8GB recommended
 - **Storage**: 500MB for app + space for videos
 - **CPU**: Intel Core i5 or equivalent (faster = better)
+
+### Platform Support
+- **macOS**: Full support with .app builds ✅
+- **Linux**: Script-based execution and executable builds ✅
+- **Windows**: Source code execution via PowerShell ✅
+  - Note: Standalone .exe builds not yet available
 
 ## 🔮 Future Enhancements
 
