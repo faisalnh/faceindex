@@ -24,7 +24,7 @@ The application features:
 ### Prerequisites
 
 - Python 3.8 or higher
-- macOS or Linux
+- macOS, Windows, or Linux
 - CMake (required for dlib)
 
 ### macOS
